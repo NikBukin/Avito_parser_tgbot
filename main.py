@@ -3,6 +3,14 @@ from telebot import types
 import time
 import pandas as pd
 from keyboa import Keyboa
+from threading import Thread
+import json
+
+import undetected_chromedriver as us
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+
+import os.path
 
 import avito_parser
 import config
@@ -11,6 +19,68 @@ import users_par
 bot = telebot.TeleBot(config.token, skip_pending=True)
 
 user_dict = {}
+
+
+class AvitoParse:
+    def __init__(self, url: list, items: list, count=100, version_main=None, limit=0, userid=None):
+        self.url = url
+        self.items = items
+        self.count = count
+        self.version_main = version_main
+        self.limit = limit
+        self.userid = userid
+        self.data = []
+
+    def __set_up(self):
+        options = Options()
+        options.add_argument('--headless')
+        self.driver = us.Chrome(version_main=self.version_main, options=options)
+
+    def __get_url(self):
+        self.driver.get(self.url)
+
+    def __paginator(self):
+        while self.driver.find_elements(By.CSS_SELECTOR, "[data-marker*='pagination-button/next']") and self.count > 0:
+            self.__parse_page()
+            self.driver.find_element(By.CSS_SELECTOR, "[data-marker*='pagination-button/next']").click()
+            self.count -= 1
+
+    def __parse_page(self):
+        titles = self.driver.find_elements(By.CSS_SELECTOR, "[data-marker='item']")
+
+        try:
+            for title in titles:
+                name = title.find_element(By.CSS_SELECTOR, "[itemprop='name']").text
+                description = title.find_element(By.CSS_SELECTOR, "[class*='item-description']").text
+                url = title.find_element(By.CSS_SELECTOR, "[data-marker='item-title']").get_attribute("href")
+                price = title.find_element(By.CSS_SELECTOR, "[itemprop='price']").get_attribute("content")
+                data = {
+                    'name': name,
+                    'description': description,
+                    'url': url,
+                    'price': price
+                }
+                if any([item.lower() in description.lower() for item in self.items]) and int(price) <= self.limit:
+                    self.data.append(data)
+                    print(data)
+                    markup = types.InlineKeyboardMarkup()
+                    markup.add(types.InlineKeyboardButton("Товар на авито", url=url))
+                    mes_text = "*Наименование:*\n{}\n\n*Цена:*\n{}\n\n*Описание*\n{}".format(name, price, description)
+                    bot.send_message(self.userid, mes_text, reply_markup=markup, parse_mode="Markdown")
+
+            bot.send_message(self.userid, text="Поиск закончен", parse_mode="Markdown")
+            self.__save_data()
+        except Exception as e:
+            print(e)
+
+    def __save_data(self):
+        with open("items.json", "w", encoding="utf-8") as f:
+            json.dump(self.data, f, ensure_ascii=False, indent=4)
+
+    def parse(self):
+        self.__set_up()
+        self.__get_url()
+        self.__paginator()
 
 
 class User:
@@ -52,11 +122,11 @@ def send_start(message):
         complete_keyboa = Keyboa(items=text_list, copy_text_to_callback=True)
 
         bot.send_message(message.chat.id, text="Добро пожаловать в тестовый бот по поиску дешевых товаров на "
-                                                     "*Aвито*!\nЗдесь вы можете выбрать два алгоритма работы "
-                                                     "бота:\n\n* - ПОИСК ХАЛЯВЫ*\n_предназначен для поиска "
-                                                     "бесплатных товаров по заданным параметрам_\n\n* - ПОИСК ПО "
-                                                     "ЗАДАННОЙ ЦЕНЕ*\n_Предназначен для поиска товаров по заданной цене_",
-                               reply_markup=complete_keyboa(), parse_mode="Markdown")
+                                               "*Aвито*!\nЗдесь вы можете выбрать два алгоритма работы "
+                                               "бота:\n\n* - ПОИСК ХАЛЯВЫ*\n_предназначен для поиска "
+                                               "бесплатных товаров по заданным параметрам_\n\n* - ПОИСК ПО "
+                                               "ЗАДАННОЙ ЦЕНЕ*\n_Предназначен для поиска товаров по заданной цене_",
+                         reply_markup=complete_keyboa(), parse_mode="Markdown")
         bot.send_message(message.chat.id,
                          text="Перед началом использования алгоритма необходимо задать базовые параметры",
                          parse_mode="Markdown")
@@ -77,8 +147,7 @@ def send_welcome(message):
 
         complete_keyboa = Keyboa(items=text_list, copy_text_to_callback=True)
 
-
-        msg = bot.send_message(message.chat.id, text="Выберите алгоритм работы бота:"
+        bot.send_message(message.chat.id, text="Выберите алгоритм работы бота:"
                                                      "\n\n* - ПОИСК ХАЛЯВЫ*\n_предназначен для поиска "
                                                      "бесплатных товаров по заданным параметрам_\n\n* - ПОИСК ПО "
                                                      "ЗАДАННОЙ ЦЕНЕ*\n_Предназначен для поиска товаров по заданной цене_",
@@ -216,26 +285,29 @@ def callback_inline(call):
 
         bot.register_next_step_handler(msg, change_param_interval_def)
 
-    if call.data == '💸 Халява':
-        avito_parser.AvitoParse(url="https://www.avito.ru/all/bytovaya_elektronika?cd=1&q=%D0%BE%D1%82%D0%B4%D0%B0%D0%BC+%D0%B1%D0%B5%D1%81%D0%BF%D0%BB%D0%B0%D1%82%D0%BD%D0%BE",
-                                count = 1,
-                                version_main=116,
-                                items=["iphone","телевизор"]
-                                ).parse()
-        print("поиск закончен")
-        pass
+    elif call.data == '💸 Халява':
+        if os.path.exists("users_par_dir/user_{}.json".format(chat_id)):
+            with open("users_par_dir/user_{}.json".format(chat_id), encoding='utf8') as f:
+                param = json.load(f)
+            mess_text = "Начинаем поиск товаров по следующим параметрам:\n\n" \
+                      "🛒 Товар - {}\n" \
+                      "💰 Цена - Бесплатно\n" \
+                      "🏙 Город - {}\n" \
+                      "⏱ Интервал - {}\n".format(param["item"], param["city"], param["interval"])
+            bot.send_message(chat_id, text=mess_text, parse_mode="Markdown")
+            th = Thread(target=AvitoParse(
+                        url="https://www.avito.ru/all/bytovaya_elektronika?cd=1&q=%D0%BE%D1%82%D0%B4%D0%B0%D0%BC+%D0%B1%D0%B5%D1%81%D0%BF%D0%BB%D0%B0%D1%82%D0%BD%D0%BE",
+                        count=5,
+                        version_main=116,
+                        items=[param['item']],
+                        limit=0,
+                        userid=chat_id).parse(), args=())
+            th.start()
+            print("Закончено")
+
 
     if call.data == '💰 Поиск по цене':
         pass
-
-
-
-
-
-
-
-
-
 
 
 # if __name__ == '__main__':
